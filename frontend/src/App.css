@@ -1,0 +1,35 @@
+.container {
+  text-align: center;
+  font-family: Arial;
+}
+
+.top-toolbar {
+  margin: 10px;
+}
+
+.controls {
+  margin: 20px;
+}
+
+.canvas {
+  border: 2px solid black;
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.image {
+  max-width: 400px;
+}
+
+.image-row {
+  display: flex;
+  justify-content: center;
+  gap: 30px;
+  margin-top: 20px;
+}
+
+.image-area {
+  margin-top: 20px;
+  position: relative;
+}
