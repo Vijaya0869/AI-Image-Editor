@@ -8,5 +8,5 @@ In addition to manual tools, the system incorporates AI-based enhancement techni
 
 Overall, the project demonstrates how AI integration improves editing efficiency, reduces manual effort, and enhances image quality within a unified interactive interface.
 
-Interface Design:
+#### Interface Design:
 <img width="1597" height="848" alt="image" src="https://github.com/user-attachments/assets/fcf1d4fd-60f0-44e4-b5da-7c0f0553f0c9" />
