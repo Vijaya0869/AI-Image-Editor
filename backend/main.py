@@ -23,9 +23,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 def read_image(contents: bytes) -> np.ndarray:
     arr = np.frombuffer(contents, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
+
     if img is None:
         raise ValueError("Could not decode image")
 
@@ -180,7 +183,6 @@ def denoise(img: np.ndarray, strength: float) -> np.ndarray:
         img, None, h=h_val, hColor=h_val, templateWindowSize=7, searchWindowSize=21
     )
 
-
 def background_removal(img: np.ndarray) -> np.ndarray:
     h, w = img.shape[:2]
     mx = max(5, int(w * 0.05))
@@ -194,16 +196,40 @@ def background_removal(img: np.ndarray) -> np.ndarray:
     try:
         cv2.grabCut(img, mask, rect, bgd_model, fgd_model, 5, cv2.GC_INIT_WITH_RECT)
     except cv2.error:
-        return img
+        return img.copy()
 
-    fg = np.where((mask == 2) | (mask == 0), 0, 1).astype(np.uint8)
+    fg = np.where(
+        (mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD),
+        255,
+        0,
+    ).astype(np.uint8)
+
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k, iterations=2)
     fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, k, iterations=1)
 
-    result = img.copy()
-    result[fg == 0] = [255, 255, 255]
-    return result
+    contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return img.copy()
+
+    largest = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(largest) <= 0:
+        return img.copy()
+
+    clean_mask = np.zeros_like(fg)
+    cv2.drawContours(clean_mask, [largest], -1, 255, thickness=cv2.FILLED)
+    clean_mask = cv2.morphologyEx(clean_mask, cv2.MORPH_CLOSE, k, iterations=1)
+
+    x, y, bw, bh = cv2.boundingRect(largest)
+
+    pad = 5
+    x1 = max(0, x - pad)
+    y1 = max(0, y - pad)
+    x2 = min(w, x + bw + pad)
+    y2 = min(h, y + bh + pad)
+
+    cropped = img[y1:y2, x1:x2].copy()
+    return cropped
 
 
 def color_correction(img: np.ndarray, strength: float) -> np.ndarray:
@@ -250,28 +276,34 @@ def resize_image(img: np.ndarray, width: int, height: int) -> np.ndarray:
     return cv2.resize(img, (width, height), interpolation=cv2.INTER_LINEAR)
 
 
+
 def rotate_image(img: np.ndarray, angle: float) -> np.ndarray:
+    if img is None or img.size == 0:
+        return img
+
     h, w = img.shape[:2]
-    center = (w // 2, h // 2)
+
+    # Normalize angle so 360 becomes 0 again
+    angle = float(angle) % 360
+
+    # Back to original position
+    if abs(angle) < 1e-8:
+        return img.copy()
+
+    center = (w / 2.0, h / 2.0)
+
     matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
 
-    cos = abs(matrix[0, 0])
-    sin = abs(matrix[0, 1])
-
-    new_w = int((h * sin) + (w * cos))
-    new_h = int((h * cos) + (w * sin))
-
-    matrix[0, 2] += (new_w / 2) - center[0]
-    matrix[1, 2] += (new_h / 2) - center[1]
-
-    return cv2.warpAffine(
+    rotated = cv2.warpAffine(
         img,
         matrix,
-        (new_w, new_h),
-        flags=cv2.INTER_LINEAR,
+        (w, h),
+        flags=cv2.INTER_CUBIC,
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=(255, 255, 255),
     )
+
+    return rotated
 
 
 def masking_tool(img: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndarray:
@@ -289,13 +321,27 @@ def masking_tool(img: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndarray:
         return img.copy()
 
     result = img.copy()
+
+    # 🔵 Create circular mask
+    mask = np.zeros((img_h, img_w), dtype=np.uint8)
+
+    center_x = (x + x2) // 2
+    center_y = (y + y2) // 2
+    radius = min((x2 - x) // 2, (y2 - y) // 2)
+
+    cv2.circle(mask, (center_x, center_y), radius, 255, -1)
+
+    # Dark overlay (masked effect)
     overlay = np.zeros_like(result)
-    result = cv2.addWeighted(overlay, 0.5, result, 0.5, 0)
+    darkened = cv2.addWeighted(overlay, 0.5, result, 0.5, 0)
 
-    result[y:y2, x:x2] = img[y:y2, x:x2]
-    cv2.rectangle(result, (x, y), (x2, y2), (0, 255, 0), 2)
+    # Apply mask: keep original inside circle, dark outside
+    result[mask == 0] = darkened[mask == 0]
+
+    # Draw circle border (optional)
+    cv2.circle(result, (center_x, center_y), radius, (0, 255, 0), 2)
+
     return result
-
 
 def layer_management(base_img: np.ndarray, overlay_img: np.ndarray, alpha: float) -> np.ndarray:
     h, w = base_img.shape[:2]
@@ -362,12 +408,14 @@ async def process_image(
     dst_y: int = Form(100),
 ):
     start = time.time()
-    contents = await file.read()
 
     try:
+        contents = await file.read()
         img = read_image(contents)
     except ValueError as e:
         return JSONResponse(content={"error": str(e)}, status_code=400)
+    except Exception as e:
+        return JSONResponse(content={"error": f"File read error: {str(e)}"}, status_code=400)
 
     original = img.copy()
 
@@ -413,6 +461,7 @@ async def process_image(
                     content={"error": "overlay_file is required for Layer Management"},
                     status_code=400,
                 )
+
             overlay_contents = await overlay_file.read()
             overlay_img = read_image(overlay_contents)
             result = layer_management(img, overlay_img, alpha)
@@ -423,6 +472,8 @@ async def process_image(
                 content={"error": f"Unknown task: {task}"},
                 status_code=400,
             )
+    except ValueError as e:
+        return JSONResponse(content={"error": str(e)}, status_code=400)
     except Exception as e:
         return JSONResponse(
             content={"error": f"Processing error: {str(e)}"},
@@ -451,8 +502,6 @@ async def export_image(
     quality: float = Form(0.95),
 ):
     try:
-        print(f"EXPORT route hit | format={format} | quality={quality}")
-
         contents = await file.read()
         img = read_image(contents)
 

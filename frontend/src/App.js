@@ -18,6 +18,8 @@ function App() {
 
   const [brightness, setBrightness] = useState(100);
   const [contrast, setContrast] = useState(100);
+  const [saturation, setSaturation] = useState(100);
+  const [sharpness, setSharpness] = useState(0);
   const [blurAmount, setBlurAmount] = useState(0);
 
   const [resizeWidth, setResizeWidth] = useState(400);
@@ -52,16 +54,16 @@ function App() {
   const [history, setHistory] = useState([]);
   const [redoStack, setRedoStack] = useState([]);
 
+  const historyRef = useRef([]);
+  const redoStackRef = useRef([]);
+
   const [exportFormat, setExportFormat] = useState("png");
   const [jpegQuality, setJpegQuality] = useState(0.95);
 
   const CANVAS_W = 400;
   const CANVAS_H = 400;
 
-  const API_URL =
-    process.env.REACT_APP_API_URL || "http://127.0.0.1:8000/process/";
-  const EXPORT_URL =
-    process.env.REACT_APP_EXPORT_URL || "http://127.0.0.1:8000/export/";
+  const API_URL = "http://127.0.0.1:8000/process/";
 
   const cropStateRef = useRef({
     dragging: false,
@@ -76,6 +78,14 @@ function App() {
     drawing: false,
     hasSavedStart: false,
   });
+
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
+
+  useEffect(() => {
+    redoStackRef.current = redoStack;
+  }, [redoStack]);
 
   const styles = {
     layout: {
@@ -225,17 +235,21 @@ function App() {
     cropStateRef.current.endX = 0;
     cropStateRef.current.endY = 0;
   };
- const pushHistoryFromCanvas = () => {
-  const canvas = canvasRef.current;
-  if (!canvas) return;
 
-  const snapshot = canvas.toDataURL("image/png");
-  setHistory((prev) => {
-    if (prev.length > 0 && prev[prev.length - 1] === snapshot) return prev;
-    return [...prev, snapshot];
-  });
-  setRedoStack([]);
-};
+  const pushHistoryFromCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const snapshot = canvas.toDataURL("image/png");
+
+    setHistory((prev) => {
+      if (prev.length > 0 && prev[prev.length - 1] === snapshot) return prev;
+      return [...prev, snapshot];
+    });
+
+    setRedoStack([]);
+  };
+
   const drawContain = (ctx, source, options = {}) => {
     const { clear = true, alpha = 1 } = options;
     const W = CANVAS_W;
@@ -260,137 +274,157 @@ function App() {
     ctx.drawImage(source, offX, offY, drawW, drawH);
     ctx.restore();
   };
+
   const loadDataUrlToCanvas = (dataURL, withCropOverlay = false) => {
-  const img = new Image();
+    const img = new Image();
 
-  img.onload = () => {
-    const canvas = canvasRef.current;
-    const ctx = getCtx();
-    if (!canvas || !ctx) return;
+    img.onload = () => {
+      const canvas = canvasRef.current;
+      const ctx = getCtx();
+      if (!canvas || !ctx) return;
 
-    canvas.width = CANVAS_W;
-    canvas.height = CANVAS_H;
-    drawContain(ctx, img, { clear: true });
+      canvas.width = CANVAS_W;
+      canvas.height = CANVAS_H;
+      drawContain(ctx, img, { clear: true });
 
-    if (withCropOverlay) {
-      const s = cropStateRef.current;
-      if (s.active || s.dragging) {
-        const x = Math.min(s.startX, s.endX);
-        const y = Math.min(s.startY, s.endY);
-        const w = Math.abs(s.endX - s.startX);
-        const h = Math.abs(s.endY - s.startY);
+      if (withCropOverlay) {
+        const s = cropStateRef.current;
+        if (s.active || s.dragging) {
+          const x = Math.min(s.startX, s.endX);
+          const y = Math.min(s.startY, s.endY);
+          const w = Math.abs(s.endX - s.startX);
+          const h = Math.abs(s.endY - s.startY);
 
-        ctx.save();
-        ctx.strokeStyle = "rgba(0,255,255,0.95)";
-        ctx.lineWidth = 3;
-        ctx.setLineDash([8, 6]);
-        ctx.strokeRect(x, y, w, h);
-        ctx.fillStyle = "rgba(0,255,255,0.08)";
-        ctx.fillRect(x, y, w, h);
-        ctx.restore();
+          ctx.save();
+          ctx.strokeStyle = "rgba(0,255,255,0.95)";
+          ctx.lineWidth = 3;
+          ctx.setLineDash([8, 6]);
+          ctx.strokeRect(x, y, w, h);
+          ctx.fillStyle = "rgba(0,255,255,0.08)";
+          ctx.fillRect(x, y, w, h);
+          ctx.restore();
+        }
       }
-    }
-  };
-  img.onerror = () => {
-    console.error("Failed to load image into canvas");
+    };
+
+    img.onerror = () => {
+      console.error("Failed to load image into canvas");
+    };
+
+    img.src = dataURL;
   };
 
-  img.src = dataURL;
-};
   const restoreFromDataURL = (dataURL) => {
     loadDataUrlToCanvas(dataURL, false);
   };
 
   const undo = () => {
-    if (history.length <= 1) return;
+    const currentHistory = historyRef.current;
+    if (currentHistory.length <= 1) return;
 
-    const newHistory = [...history];
+    const newHistory = [...currentHistory];
     const last = newHistory.pop();
+    const previousSnapshot = newHistory[newHistory.length - 1];
 
-    setRedoStack((prev) => [...prev, last]);
     setHistory(newHistory);
-    restoreFromDataURL(newHistory[newHistory.length - 1]);
-    clearCropState();
-  };
-  const redo = () => {
-    if (redoStack.length === 0) return;
+    setRedoStack((prev) => [...prev, last]);
 
-    const last = redoStack[redoStack.length - 1];
-    setRedoStack((prev) => prev.slice(0, -1));
-    setHistory((prev) => [...prev, last]);
-    restoreFromDataURL(last);
-    clearCropState();
-  };
-
- const downloadImage = async () => {
-  const canvas = canvasRef.current;
-  if (!canvas) return;
-
-  setDownloading(true);
-
-  try {
-    const normalizedFormat = String(exportFormat || "png").toLowerCase();
-
-    const mimeMap = {
-      png: "image/png",
-      jpg: "image/jpeg",
-      jpeg: "image/jpeg",
-      bmp: "image/bmp",
-      tiff: "image/tiff",
-      tif: "image/tiff",
-    };
-
-    const extensionMap = {
-      png: "png",
-      jpg: "jpg",
-      jpeg: "jpeg",
-      bmp: "bmp",
-      tiff: "tiff",
-      tif: "tiff",
-    };
-
-    const fileMime = mimeMap[normalizedFormat] || "image/png";
-    const fileExt = extensionMap[normalizedFormat] || "png";
-
-    // BMP/TIFF are not reliably supported by canvas.toBlob in browsers.
-    // Fallback them to PNG for safe download.
-    const safeMime =
-      normalizedFormat === "bmp" || normalizedFormat === "tiff" || normalizedFormat === "tif"
-        ? "image/png"
-        : fileMime;
-
-    const quality =
-      safeMime === "image/jpeg" ? jpegQuality : undefined;
-
-    const blob = await new Promise((resolve) => {
-      canvas.toBlob((fileBlob) => resolve(fileBlob), safeMime, quality);
-    });
-
-    if (!blob) {
-      alert("Could not prepare image for download.");
-      return;
+    if (previousSnapshot) {
+      restoreFromDataURL(previousSnapshot);
     }
 
-    const downloadUrl = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = downloadUrl;
-    link.download =
-      safeMime === "image/png" && (normalizedFormat === "bmp" || normalizedFormat === "tiff" || normalizedFormat === "tif")
-        ? "edited-image.png"
-        : `edited-image.${fileExt}`;
+    clearCropState();
+    drawStateRef.current.drawing = false;
+    drawStateRef.current.hasSavedStart = false;
+  };
 
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+  const redo = () => {
+    const currentRedo = redoStackRef.current;
+    if (currentRedo.length === 0) return;
 
-    URL.revokeObjectURL(downloadUrl);
-  } catch (err) {
-    console.error("Download error:", err);
-    alert("Download failed.");
-  } finally {
-    setDownloading(false);
-  }
-};
+    const last = currentRedo[currentRedo.length - 1];
+    const newRedo = currentRedo.slice(0, -1);
+
+    setRedoStack(newRedo);
+    setHistory((prev) => [...prev, last]);
+    restoreFromDataURL(last);
+
+    clearCropState();
+    drawStateRef.current.drawing = false;
+    drawStateRef.current.hasSavedStart = false;
+  };
+
+  const downloadImage = async () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    setDownloading(true);
+
+    try {
+      const normalizedFormat = String(exportFormat || "png").toLowerCase();
+
+      const mimeMap = {
+        png: "image/png",
+        jpg: "image/jpeg",
+        jpeg: "image/jpeg",
+        bmp: "image/bmp",
+        tiff: "image/tiff",
+        tif: "image/tiff",
+      };
+
+      const extensionMap = {
+        png: "png",
+        jpg: "jpg",
+        jpeg: "jpeg",
+        bmp: "bmp",
+        tiff: "tiff",
+        tif: "tiff",
+      };
+
+      const fileMime = mimeMap[normalizedFormat] || "image/png";
+      const fileExt = extensionMap[normalizedFormat] || "png";
+
+      const safeMime =
+        normalizedFormat === "bmp" ||
+        normalizedFormat === "tiff" ||
+        normalizedFormat === "tif"
+          ? "image/png"
+          : fileMime;
+
+      const quality = safeMime === "image/jpeg" ? jpegQuality : undefined;
+
+      const blob = await new Promise((resolve) => {
+        canvas.toBlob((fileBlob) => resolve(fileBlob), safeMime, quality);
+      });
+
+      if (!blob) {
+        alert("Could not prepare image for download.");
+        return;
+      }
+
+      const downloadUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download =
+        safeMime === "image/png" &&
+        (normalizedFormat === "bmp" ||
+          normalizedFormat === "tiff" ||
+          normalizedFormat === "tif")
+          ? "edited-image.png"
+          : `edited-image.${fileExt}`;
+
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      URL.revokeObjectURL(downloadUrl);
+    } catch (err) {
+      console.error("Download error:", err);
+      alert("Download failed.");
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   const canvasToFile = async () => {
     const canvas = canvasRef.current;
@@ -514,8 +548,8 @@ function App() {
   };
 
   const redrawWithCropOverlay = () => {
-    if (history.length === 0) return;
-    loadDataUrlToCanvas(history[history.length - 1], true);
+    if (historyRef.current.length === 0) return;
+    loadDataUrlToCanvas(historyRef.current[historyRef.current.length - 1], true);
   };
 
   const onCanvasMouseDown = (e) => {
@@ -527,8 +561,18 @@ function App() {
     if (eraserEnabled) {
       drawStateRef.current.drawing = true;
       drawStateRef.current.hasSavedStart = false;
+
+      pushHistoryFromCanvas();
+      drawStateRef.current.hasSavedStart = true;
+
+      ctx.save();
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.beginPath();
+      ctx.arc(x, y, Math.max(1, brushSize / 2), 0, Math.PI * 2);
+      ctx.fill();
       ctx.beginPath();
       ctx.moveTo(x, y);
+      ctx.restore();
       return;
     }
 
@@ -554,8 +598,18 @@ function App() {
     if (mode === "basic" && task === "Free Draw") {
       drawStateRef.current.drawing = true;
       drawStateRef.current.hasSavedStart = false;
+
+      pushHistoryFromCanvas();
+      drawStateRef.current.hasSavedStart = true;
+
+      ctx.save();
+      ctx.fillStyle = brushColor;
+      ctx.beginPath();
+      ctx.arc(x, y, Math.max(1, brushSize / 2), 0, Math.PI * 2);
+      ctx.fill();
       ctx.beginPath();
       ctx.moveTo(x, y);
+      ctx.restore();
       return;
     }
 
@@ -577,11 +631,6 @@ function App() {
     if (!ctx) return;
 
     if (eraserEnabled && drawStateRef.current.drawing) {
-      if (!drawStateRef.current.hasSavedStart) {
-        pushHistoryFromCanvas();
-        drawStateRef.current.hasSavedStart = true;
-      }
-
       ctx.save();
       ctx.globalCompositeOperation = "destination-out";
       ctx.lineWidth = brushSize;
@@ -589,16 +638,13 @@ function App() {
       ctx.lineJoin = "round";
       ctx.lineTo(x, y);
       ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x, y);
       ctx.restore();
       return;
     }
 
     if (mode === "basic" && task === "Free Draw" && drawStateRef.current.drawing) {
-      if (!drawStateRef.current.hasSavedStart) {
-        pushHistoryFromCanvas();
-        drawStateRef.current.hasSavedStart = true;
-      }
-
       ctx.save();
       ctx.strokeStyle = brushColor;
       ctx.lineWidth = brushSize;
@@ -606,6 +652,8 @@ function App() {
       ctx.lineJoin = "round";
       ctx.lineTo(x, y);
       ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x, y);
       ctx.restore();
       return;
     }
@@ -616,22 +664,24 @@ function App() {
       redrawWithCropOverlay();
     }
   };
-  const onCanvasMouseUp = () => {
-  if (drawStateRef.current.drawing) {
-    drawStateRef.current.drawing = false;
 
-    if (drawStateRef.current.hasSavedStart) {
-      pushHistoryFromCanvas();
+  const onCanvasMouseUp = () => {
+    if (drawStateRef.current.drawing) {
+      drawStateRef.current.drawing = false;
+
+      if (drawStateRef.current.hasSavedStart) {
+        pushHistoryFromCanvas();
+      }
+
+      drawStateRef.current.hasSavedStart = false;
     }
 
-    drawStateRef.current.hasSavedStart = false;
-  }
+    if (cropStateRef.current.dragging) {
+      cropStateRef.current.dragging = false;
+      redrawWithCropOverlay();
+    }
+  };
 
-  if (cropStateRef.current.dragging) {
-    cropStateRef.current.dragging = false;
-    redrawWithCropOverlay();
-  }
-};
   const applyCrop = () => {
     const s = cropStateRef.current;
     if (!s.active) {
@@ -651,7 +701,7 @@ function App() {
 
     const ctx = getCtx();
     const canvas = canvasRef.current;
-    if (!ctx || !canvas || history.length === 0) return;
+    if (!ctx || !canvas || historyRef.current.length === 0) return;
 
     const baseImg = new Image();
     baseImg.onload = () => {
@@ -688,11 +738,51 @@ function App() {
       clearCropState();
       pushHistoryFromCanvas();
     };
-    baseImg.src = history[history.length - 1];
+    baseImg.src = historyRef.current[historyRef.current.length - 1];
+  };
+
+  const applySharpness = (imageData, amount = 1) => {
+    const { width, height, data } = imageData;
+    const output = new Uint8ClampedArray(data);
+
+    const centerBoost = 5 + amount;
+    const kernel = [
+      0, -1, 0,
+      -1, centerBoost, -1,
+      0, -1, 0,
+    ];
+
+    const getIndex = (x, y) => (y * width + x) * 4;
+
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        for (let c = 0; c < 3; c++) {
+          let sum = 0;
+          let k = 0;
+
+          for (let ky = -1; ky <= 1; ky++) {
+            for (let kx = -1; kx <= 1; kx++) {
+              const px = x + kx;
+              const py = y + ky;
+              const idx = getIndex(px, py);
+              sum += data[idx + c] * kernel[k++];
+            }
+          }
+
+          const outIdx = getIndex(x, y);
+          output[outIdx + c] = Math.max(0, Math.min(255, sum));
+        }
+
+        const alphaIdx = getIndex(x, y) + 3;
+        output[alphaIdx] = data[alphaIdx];
+      }
+    }
+
+    return new ImageData(output, width, height);
   };
 
   const applyBrightnessContrast = () => {
-    if (history.length === 0) return;
+    if (historyRef.current.length === 0) return;
 
     const ctx = getCtx();
     const canvas = canvasRef.current;
@@ -703,16 +793,24 @@ function App() {
       canvas.width = CANVAS_W;
       canvas.height = CANVAS_H;
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
-      ctx.filter = `brightness(${brightness}%) contrast(${contrast}%)`;
+
+      ctx.filter = `brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%)`;
       drawContain(ctx, img, { clear: false });
       ctx.filter = "none";
+
+      if (sharpness > 0) {
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const sharpened = applySharpness(imageData, sharpness);
+        ctx.putImageData(sharpened, 0, 0);
+      }
+
       pushHistoryFromCanvas();
     };
-    img.src = history[history.length - 1];
+    img.src = historyRef.current[historyRef.current.length - 1];
   };
 
   const applyBlur = () => {
-    if (history.length === 0) return;
+    if (historyRef.current.length === 0) return;
 
     const ctx = getCtx();
     const canvas = canvasRef.current;
@@ -728,11 +826,11 @@ function App() {
       ctx.filter = "none";
       pushHistoryFromCanvas();
     };
-    img.src = history[history.length - 1];
+    img.src = historyRef.current[historyRef.current.length - 1];
   };
 
   const applyResizeBasic = () => {
-    if (history.length === 0) return;
+    if (historyRef.current.length === 0) return;
     if (resizeWidth <= 0 || resizeHeight <= 0) {
       alert("Width and height must be greater than 0.");
       return;
@@ -759,11 +857,11 @@ function App() {
       drawContain(ctx, tmp, { clear: false });
       pushHistoryFromCanvas();
     };
-    img.src = history[history.length - 1];
+    img.src = historyRef.current[historyRef.current.length - 1];
   };
 
   const applyRotateBasic = () => {
-    if (history.length === 0) return;
+    if (historyRef.current.length === 0) return;
 
     const ctx = getCtx();
     const canvas = canvasRef.current;
@@ -771,24 +869,81 @@ function App() {
 
     const img = new Image();
     img.onload = () => {
+      const temp = document.createElement("canvas");
+      temp.width = CANVAS_W;
+      temp.height = CANVAS_H;
+      const tctx = temp.getContext("2d");
+      if (!tctx) return;
+
+      tctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+      tctx.drawImage(img, 0, 0, CANVAS_W, CANVAS_H);
+
+      const imageData = tctx.getImageData(0, 0, CANVAS_W, CANVAS_H);
+      const { data, width, height } = imageData;
+
+      let minX = width, minY = height, maxX = -1, maxY = -1;
+
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const i = (y * width + x) * 4;
+          const r = data[i];
+          const g = data[i + 1];
+          const b = data[i + 2];
+          const a = data[i + 3];
+
+          const isBackground = a === 0 || (r > 245 && g > 245 && b > 245);
+
+          if (!isBackground) {
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+
+      if (maxX < minX || maxY < minY) {
+        alert("No visible image area found to rotate.");
+        return;
+      }
+
+      const cropW = maxX - minX + 1;
+      const cropH = maxY - minY + 1;
+
+      const cropCanvas = document.createElement("canvas");
+      cropCanvas.width = cropW;
+      cropCanvas.height = cropH;
+      const cropCtx = cropCanvas.getContext("2d");
+      if (!cropCtx) return;
+
+      cropCtx.drawImage(temp, minX, minY, cropW, cropH, 0, 0, cropW, cropH);
+
       canvas.width = CANVAS_W;
       canvas.height = CANVAS_H;
       ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
       const rad = (rotateAngle * Math.PI) / 180;
-      const scale = Math.min(CANVAS_W / img.width, CANVAS_H / img.height);
-      const drawW = img.width * scale;
-      const drawH = img.height * scale;
+      const cos = Math.abs(Math.cos(rad));
+      const sin = Math.abs(Math.sin(rad));
+
+      const rotatedBoxW = cropW * cos + cropH * sin;
+      const rotatedBoxH = cropW * sin + cropH * cos;
+
+      const fitScale = Math.min(CANVAS_W / rotatedBoxW, CANVAS_H / rotatedBoxH, 1);
 
       ctx.save();
       ctx.translate(CANVAS_W / 2, CANVAS_H / 2);
       ctx.rotate(rad);
-      ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+      ctx.scale(fitScale, fitScale);
+      ctx.drawImage(cropCanvas, -cropW / 2, -cropH / 2, cropW, cropH);
       ctx.restore();
 
       pushHistoryFromCanvas();
     };
-    img.src = history[history.length - 1];
+
+    img.src = historyRef.current[historyRef.current.length - 1];
   };
 
   const applyMaskBasic = () => {
@@ -919,12 +1074,14 @@ function App() {
         formData.append("dst_x", String(dstX));
         formData.append("dst_y", String(dstY));
       }
+
       const res = await axios.post(API_URL, formData, {
-       headers: {
-    "Content-Type": "multipart/form-data",
-  },
-  timeout: 120000,
-});
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+        timeout: 120000,
+      });
+
       let b64 = res.data?.image;
 
       if (!b64) {
@@ -943,12 +1100,6 @@ function App() {
         time: res.data?.time ?? "N/A",
       });
 
-      loadDataUrlToCanvas(b64, false);
-      setHistory((prev) => {
-        if (prev.length > 0 && prev[prev.length - 1] === b64) return prev;
-        return [...prev, b64];
-      });
-      setRedoStack([]);
       clearCropState();
     } catch (err) {
       console.error(err);
@@ -1032,6 +1183,27 @@ function App() {
             max="200"
             value={contrast}
             onChange={(e) => setContrast(Number(e.target.value))}
+            style={{ width: "100%", marginBottom: "8px" }}
+          />
+
+          <label style={styles.label}>Saturation: {saturation}%</label>
+          <input
+            type="range"
+            min="0"
+            max="200"
+            value={saturation}
+            onChange={(e) => setSaturation(Number(e.target.value))}
+            style={{ width: "100%", marginBottom: "8px" }}
+          />
+
+          <label style={styles.label}>Sharpness: {sharpness}</label>
+          <input
+            type="range"
+            min="0"
+            max="5"
+            step="1"
+            value={sharpness}
+            onChange={(e) => setSharpness(Number(e.target.value))}
             style={{ width: "100%", marginBottom: "8px" }}
           />
 
@@ -1663,13 +1835,13 @@ function App() {
 
         <div style={styles.uploadBox}>
           <input
-       type="file"
-       accept="image/*"
-       onChange={handleFileChange}
-       onClick={(e) => {
-        e.target.value = null;
-  }}
-/>
+            type="file"
+            accept="image/*"
+            onChange={handleFileChange}
+            onClick={(e) => {
+              e.target.value = null;
+            }}
+          />
         </div>
 
         {inputPreview && (
