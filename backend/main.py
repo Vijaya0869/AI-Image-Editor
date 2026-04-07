@@ -184,9 +184,13 @@ def denoise(img: np.ndarray, strength: float) -> np.ndarray:
     )
 
 def background_removal(img: np.ndarray) -> np.ndarray:
+    if img is None or img.size == 0:
+        return img
+
     h, w = img.shape[:2]
-    mx = max(5, int(w * 0.05))
-    my = max(5, int(h * 0.05))
+
+    mx = max(10, int(w * 0.03))
+    my = max(10, int(h * 0.03))
     rect = (mx, my, max(1, w - 2 * mx), max(1, h - 2 * my))
 
     mask = np.zeros((h, w), np.uint8)
@@ -198,17 +202,26 @@ def background_removal(img: np.ndarray) -> np.ndarray:
     except cv2.error:
         return img.copy()
 
+    # Foreground mask
     fg = np.where(
         (mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD),
         255,
-        0,
+        0
     ).astype(np.uint8)
 
+    # Clean mask
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k, iterations=2)
     fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, k, iterations=1)
+    fg = cv2.GaussianBlur(fg, (5, 5), 0)
 
-    contours, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Find main object
+    contours, _ = cv2.findContours(
+        (fg > 127).astype(np.uint8) * 255,
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
     if not contours:
         return img.copy()
 
@@ -216,20 +229,26 @@ def background_removal(img: np.ndarray) -> np.ndarray:
     if cv2.contourArea(largest) <= 0:
         return img.copy()
 
-    clean_mask = np.zeros_like(fg)
+    # Clean mask for only subject
+    clean_mask = np.zeros((h, w), dtype=np.uint8)
     cv2.drawContours(clean_mask, [largest], -1, 255, thickness=cv2.FILLED)
-    clean_mask = cv2.morphologyEx(clean_mask, cv2.MORPH_CLOSE, k, iterations=1)
+    clean_mask = cv2.morphologyEx(clean_mask, cv2.MORPH_CLOSE, k, iterations=2)
+    clean_mask = cv2.GaussianBlur(clean_mask, (7, 7), 0)
 
+    # 🔥 KEY CHANGE: Add transparency (BGRA)
+    result = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+    result[:, :, 3] = clean_mask
+
+    # 🔥 Crop tightly to subject only
     x, y, bw, bh = cv2.boundingRect(largest)
 
-    pad = 5
+    pad = 10
     x1 = max(0, x - pad)
     y1 = max(0, y - pad)
     x2 = min(w, x + bw + pad)
     y2 = min(h, y + bh + pad)
 
-    cropped = img[y1:y2, x1:x2].copy()
-    return cropped
+    return result[y1:y2, x1:x2].copy()
 
 
 def color_correction(img: np.ndarray, strength: float) -> np.ndarray:
